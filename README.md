@@ -256,6 +256,16 @@ Through this project, I learned:
 * Streamlit Web Application Development
 * End-to-End Machine Learning Project Development
 
+* ## Application Preview
+
+### Home Screen
+
+![Home](screenshots/home.png)
+
+### Recommendations
+
+![Recommendation](screenshots/recommendation.png)
+
 ---
 
 # 👨‍💻 Author
