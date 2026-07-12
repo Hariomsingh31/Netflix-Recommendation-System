@@ -272,4 +272,4 @@ Through this project, I learned:
 
 **Hariom Singh**
 
-B.Sc. Computer Science | Data Analytics | Machine Learning | Python | SQL | Power BI
+B.S. Computer Science | Data Science | Machine Learning | Python | SQL |
