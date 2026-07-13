@@ -1,143 +1,1152 @@
-# ============================================================================
-# RECOMMENDATION UTILITY FUNCTIONS
-# ============================================================================
+# =============================================================================
+# recommendation.py
+# Netflix Movie Recommendation System Backend
+# Part 1 - Imports, Data Loading & Fuzzy Search
+# =============================================================================
 
-import streamlit as st
+import pickle
 import pandas as pd
 import numpy as np
+import streamlit as st
 
+from rapidfuzz import process, fuzz
+
+# =============================================================================
+# LOAD DATA
+# =============================================================================
+
+@st.cache_resource
 def load_data():
-    """Load movie data and similarity matrix with caching"""
+    """
+    Load trained model files.
+
+    Returns
+    -------
+    movies : DataFrame
+    similarity : numpy.ndarray
+    """
+
     try:
+
         movies = pickle.load(open("models/movies.pkl", "rb"))
+
         similarity = pickle.load(open("models/similarity.pkl", "rb"))
-        
-        # Check if there are duplicates
-        duplicate_count = movies.duplicated(subset=['Title']).sum()
-        
-        # Remove duplicates and keep first occurrence
-        movies = movies.drop_duplicates(subset=['Title'], keep='first')
-        movies = movies.reset_index(drop=True)
-        
-        # Match similarity matrix size
-        if len(movies) > similarity.shape[0]:
-            movies = movies.iloc[:similarity.shape[0]]
-            movies = movies.reset_index(drop=True)
-        elif len(movies) < similarity.shape[0]:
-            similarity = similarity[:len(movies), :len(movies)]
-        
-        # Ensure all required columns exist
-        required_cols = ['Title', 'Genre', 'Vote_Average', 'Popularity', 'Year', 'Poster_Url']
-        for col in required_cols:
-            if col not in movies.columns:
-                movies[col] = 'N/A' if col == 'Poster_Url' else 0
-        
-        # Convert Year to int if needed
-        if movies['Year'].dtype != 'int64':
-            movies['Year'] = movies['Year'].astype(int)
-        
-        return movies, similarity, duplicate_count
-        
-    except FileNotFoundError:
-        st.error("❌ Model files not found! Please check the path.")
+
+        return movies, similarity
+
+    except FileNotFoundError as e:
+
+        st.error(f"Model file not found:\n{e}")
+
         st.stop()
+
     except Exception as e:
-        st.error(f"❌ Error loading files: {str(e)}")
+
+        st.error(f"Error loading model:\n{e}")
+
         st.stop()
 
-def recommend(movies, similarity, movie_name, num_recommendations=10, 
-              filter_genre=None, min_rating=0, year_range=None):
+    # NOTE: st.stop() halts execution above, so this point is never reached.
+    # Removed the unreachable `return movies, similarity` that referenced
+    # undefined variables.
+
+
+# =============================================================================
+# BASIC INFORMATION
+# =============================================================================
+
+def total_movies(movies):
+    """Return total number of movies."""
+    return len(movies)
+
+
+def total_languages(movies):
+    """Return number of languages."""
+    return movies["Original_Language"].nunique()
+
+
+def average_rating(movies):
+    """Return average movie rating."""
+    return round(movies["Vote_Average"].mean(), 2)
+
+
+def latest_year(movies):
+    """Return latest movie year."""
+    return int(movies["Year"].max())
+
+
+# =============================================================================
+# FUZZY SEARCH
+# =============================================================================
+
+def fuzzy_search(movie_name, movies):
     """
-    Get movie recommendations with optional filters
+    Find closest matching movie title.
+
+    Parameters
+    ----------
+    movie_name : str
+
+    Returns
+    -------
+    Best matching movie title
     """
-    # Get movie index
-    try:
-        movie_index = movies[movies["Title"] == movie_name].index[0]
-    except IndexError:
-        st.warning("Movie not found in database!")
-        return []
-    
-    # Check if index is within similarity matrix bounds
-    if movie_index >= similarity.shape[0]:
-        st.error(f"Movie index {movie_index} is out of bounds")
-        return []
-    
-    # Get similarity scores
+
+    titles = movies["Title"].tolist()
+
+    result = process.extractOne(
+
+        movie_name,
+
+        titles,
+
+        scorer=fuzz.WRatio
+
+    )
+
+    if result is None:
+
+        return None
+
+    matched_title, score, _ = result
+
+    if score >= 70:
+
+        return matched_title
+
+    return None
+
+
+# =============================================================================
+# SEARCH SUGGESTIONS
+# =============================================================================
+
+def search_suggestions(movie_name, movies, limit=5):
+    """
+    Return top movie suggestions.
+
+    Example
+
+    Input:
+
+    spder man
+
+    Output:
+
+    Spider-Man
+    Spider-Man 2
+    Spider-Man 3
+    """
+
+    titles = movies["Title"].tolist()
+
+    results = process.extract(
+
+        movie_name,
+
+        titles,
+
+        scorer=fuzz.WRatio,
+
+        limit=limit
+
+    )
+
+    suggestions = []
+
+    for movie in results:
+
+        suggestions.append(movie[0])
+
+    return suggestions
+
+
+# =============================================================================
+# GET MOVIE DETAILS
+# =============================================================================
+
+def get_movie(movie_name, movies):
+    """
+    Return complete movie row.
+
+    Used by app.py
+    """
+
+    movie = movies[
+
+        movies["Title"] == movie_name
+
+    ]
+
+    if movie.empty:
+
+        return None
+
+    return movie.iloc[0]
+
+
+# =============================================================================
+# CHECK MOVIE EXISTS
+# =============================================================================
+
+def movie_exists(movie_name, movies):
+    """
+    Check whether movie exists.
+    """
+
+    return movie_name in movies["Title"].values
+
+
+# =============================================================================
+# HYBRID RECOMMENDATION ENGINE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Normalize Popularity
+# -----------------------------------------------------------------------------
+
+def normalize_popularity(popularity, max_popularity):
+    """
+    Normalize popularity between 0 and 1.
+    """
+
+    if max_popularity == 0:
+        return 0
+
+    return popularity / max_popularity
+
+
+# -----------------------------------------------------------------------------
+# Normalize Rating
+# -----------------------------------------------------------------------------
+
+def normalize_rating(rating):
+    """
+    Convert rating (0-10) into (0-1)
+    """
+
+    return rating / 10
+
+
+# -----------------------------------------------------------------------------
+# Hybrid Score
+# -----------------------------------------------------------------------------
+
+def calculate_hybrid_score(similarity_score,
+                           rating,
+                           popularity,
+                           max_popularity):
+    """
+    Final Score
+
+    70% -> Similarity
+    20% -> Rating
+    10% -> Popularity
+    """
+
+    rating_score = normalize_rating(rating)
+
+    popularity_score = normalize_popularity(
+        popularity,
+        max_popularity
+    )
+
+    final_score = (
+
+        0.70 * similarity_score +
+
+        0.20 * rating_score +
+
+        0.10 * popularity_score
+
+    )
+
+    return round(final_score, 4)
+
+
+# =============================================================================
+# RECOMMEND MOVIES
+# =============================================================================
+
+def recommend(
+    movie_name,
+    movies,
+    similarity,
+    top_n=10
+):
+    """
+    Hybrid Movie Recommendation
+
+    Returns
+
+    List of recommended movies
+    """
+
+    # ----------------------------------------------------
+    # Check movie exists
+    # ----------------------------------------------------
+
+    if not movie_exists(movie_name, movies):
+
+        corrected = fuzzy_search(movie_name, movies)
+
+        if corrected is None:
+
+            return []
+
+        movie_name = corrected
+
+    # ----------------------------------------------------
+    # Movie Index
+    # ----------------------------------------------------
+
+    movie_index = movies[
+        movies["Title"] == movie_name
+    ].index[0]
+
+    # ----------------------------------------------------
+    # Similarity Scores
+    # ----------------------------------------------------
+
     distances = similarity[movie_index]
-    
-    # Get movie list sorted by similarity
-    movie_list = sorted(
-        list(enumerate(distances)),
-        reverse=True,
-        key=lambda x: x[1]
-    )[1:50]
-    
-    recommended_movies = []
-    seen_titles = set()
-    
-    for idx, (index, similarity_score) in enumerate(movie_list):
-        if len(recommended_movies) >= num_recommendations:
-            break
-        
-        if index >= len(movies):
+
+    # ----------------------------------------------------
+    # Maximum Popularity
+    # ----------------------------------------------------
+
+    max_popularity = movies["Popularity"].max()
+
+    recommendations = []
+
+    # ----------------------------------------------------
+    # Loop through similarity matrix
+    # ----------------------------------------------------
+
+    for index, sim_score in enumerate(distances):
+
+        if index == movie_index:
             continue
-            
+
         movie = movies.iloc[index]
-        
-        # Skip if already seen
-        if movie["Title"] in seen_titles:
-            continue
-        seen_titles.add(movie["Title"])
-        
-        # Apply genre filter
-        if filter_genre and filter_genre != "All Genres":
-            if filter_genre not in str(movie.get("Genre", "")):
-                continue
-                
-        # Apply rating filter
-        if min_rating > 0:
-            if movie.get("Vote_Average", 0) < min_rating:
-                continue
-        
-        # Apply year range filter
-        if year_range:
-            movie_year = movie.get("Year", 0)
-            if movie_year < year_range[0] or movie_year > year_range[1]:
-                continue
-        
-        recommended_movies.append({
-            "Title": movie.get("Title", "Unknown"),
-            "Genre": movie.get("Genre", "N/A"),
-            "Rating": movie.get("Vote_Average", 0),
-            "Popularity": movie.get("Popularity", 0),
-            "Year": movie.get("Year", 0),
-            "Poster": movie.get("Poster_Url", ""),
-            "Similarity": round(similarity_score, 3)
+
+        final_score = calculate_hybrid_score(
+
+            similarity_score=sim_score,
+
+            rating=movie["Vote_Average"],
+
+            popularity=movie["Popularity"],
+
+            max_popularity=max_popularity
+
+        )
+
+        recommendations.append({
+
+            "Title": movie["Title"],
+
+            "Genre": movie["Genre"],
+
+            "Rating": movie["Vote_Average"],
+
+            "Popularity": movie["Popularity"],
+
+            "Year": movie["Year"],
+
+            "Poster_Url": get_poster(movie),
+
+            "Similarity": round(sim_score, 4),
+
+            "HybridScore": final_score
+
         })
-    
-    return recommended_movies
 
-def get_genre_list(movies):
-    """Extract all unique genres from the dataset"""
-    all_genres = set()
-    for genre in movies['Genre'].dropna():
-        if isinstance(genre, str):
-            all_genres.update([g.strip() for g in genre.split(',')])
-    return ["All Genres"] + sorted(list(all_genres))
+    # ----------------------------------------------------
+    # Convert into DataFrame
+    # ----------------------------------------------------
 
-def get_movie_stats(movies):
-    """Get statistics about the movie dataset"""
-    return {
-        'total_movies': len(movies),
-        'avg_rating': movies['Vote_Average'].mean(),
-        'max_rating': movies['Vote_Average'].max(),
-        'min_rating': movies['Vote_Average'].min(),
-        'most_common_genre': movies['Genre'].mode()[0] if not movies['Genre'].mode().empty else 'N/A'
+    recommendations = pd.DataFrame(recommendations)
+
+    # ----------------------------------------------------
+    # Remove duplicate titles
+    # ----------------------------------------------------
+
+    recommendations = recommendations.drop_duplicates(
+        subset="Title"
+    )
+
+    # ----------------------------------------------------
+    # Sort by Hybrid Score
+    # ----------------------------------------------------
+
+    recommendations = recommendations.sort_values(
+
+        by="HybridScore",
+
+        ascending=False
+
+    )
+
+    # ----------------------------------------------------
+    # Return Top N
+    # ----------------------------------------------------
+
+    return recommendations.head(top_n)
+
+
+# =============================================================================
+# WHY THIS MOVIE?
+# =============================================================================
+
+def recommendation_reason(movie):
+    """
+    Explain recommendation.
+    """
+
+    reasons = []
+
+    if movie["Rating"] >= 8:
+
+        reasons.append("⭐ Highly Rated")
+
+    if movie["Popularity"] >= 500:
+
+        reasons.append("🔥 Popular")
+
+    if movie["Similarity"] >= 0.60:
+
+        reasons.append("🎯 Highly Similar")
+
+    elif movie["Similarity"] >= 0.40:
+
+        reasons.append("🎬 Similar Story")
+
+    else:
+
+        reasons.append("📖 Related Content")
+
+    return ", ".join(reasons)
+
+
+# =============================================================================
+# DISPLAY RECOMMENDATIONS
+# =============================================================================
+
+def recommendation_table(
+    movie_name,
+    movies,
+    similarity,
+    top_n=10
+):
+    """
+    Display recommendation table.
+    """
+
+    recommendations = recommend(
+
+        movie_name,
+
+        movies,
+
+        similarity,
+
+        top_n
+
+    )
+
+    if len(recommendations) == 0:
+
+        return pd.DataFrame()
+
+    recommendations["Reason"] = recommendations.apply(
+
+        recommendation_reason,
+
+        axis=1
+
+    )
+
+    return recommendations
+
+# =============================================================================
+# TRENDING MOVIES
+# =============================================================================
+
+def get_trending_movies(
+    movies,
+    limit=10
+):
+    """
+    Return Top Trending Movies
+    based on Popularity.
+    """
+
+    trending = movies.sort_values(
+
+        by="Popularity",
+
+        ascending=False
+
+    )
+
+    return trending.head(limit)
+
+
+# =============================================================================
+# TOP RATED MOVIES
+# =============================================================================
+
+def get_top_rated(
+    movies,
+    limit=10
+):
+    """
+    Return Highest Rated Movies
+    """
+
+    top_rated = movies.sort_values(
+
+        by=["Vote_Average", "Vote_Count"],
+
+        ascending=False
+
+    )
+
+    return top_rated.head(limit)
+
+
+# =============================================================================
+# AVAILABLE LANGUAGES
+# =============================================================================
+
+def get_languages(movies):
+    """
+    Return available languages.
+    """
+
+    languages = movies["Original_Language"] \
+                    .dropna() \
+                    .unique() \
+                    .tolist()
+
+    languages.sort()
+
+    languages.insert(0, "All")
+
+    return languages
+
+
+# =============================================================================
+# AVAILABLE YEARS
+# =============================================================================
+
+def get_years(movies):
+    """
+    Return available release years.
+    """
+
+    years = movies["Year"] \
+                .dropna() \
+                .unique() \
+                .tolist()
+
+    years = sorted(years)
+
+    return years
+
+
+# =============================================================================
+# AVAILABLE GENRES
+# =============================================================================
+
+def get_genres(movies):
+    """
+    Return all movie genres.
+    """
+
+    genres = set()
+
+    for item in movies["Genre"].dropna():
+
+        if isinstance(item, str):
+
+            values = item.split(",")
+
+            for genre in values:
+
+                genres.add(
+                    genre.strip()
+                )
+
+    genres = sorted(list(genres))
+
+    genres.insert(0, "All")
+
+    return genres
+
+
+# =============================================================================
+# FILTER MOVIES
+# =============================================================================
+
+def filter_movies(
+
+    movies,
+
+    genre="All",
+
+    language="All",
+
+    year=None,
+
+    min_rating=0
+
+):
+    """
+    Filter movies according
+    to user selection.
+    """
+
+    df = movies.copy()
+
+    # ------------------------------
+    # Genre
+    # ------------------------------
+
+    if genre != "All":
+
+        df = df[
+
+            df["Genre"]
+
+            .str.contains(
+
+                genre,
+
+                case=False,
+
+                na=False,
+
+                regex=False
+
+            )
+
+        ]
+
+    # ------------------------------
+    # Language
+    # ------------------------------
+
+    if language != "All":
+
+        df = df[
+
+            df["Original_Language"]
+
+            == language
+
+        ]
+
+    # ------------------------------
+    # Year
+    # ------------------------------
+
+    if year is not None:
+
+        df = df[
+
+            df["Year"] == year
+
+        ]
+
+    # ------------------------------
+    # Rating
+    # ------------------------------
+
+    if min_rating > 0:
+
+        df = df[
+
+            df["Vote_Average"]
+
+            >= min_rating
+
+        ]
+
+    return df
+
+
+# =============================================================================
+# SEARCH MOVIES
+# =============================================================================
+
+def search_movies(
+
+    movies,
+
+    keyword
+
+):
+    """
+    Search movie titles.
+    """
+
+    keyword = keyword.lower()
+
+    results = movies[
+
+        movies["Title"]
+
+        .str.lower()
+
+        .str.contains(
+
+            keyword,
+
+            na=False,
+
+            regex=False
+
+        )
+
+    ]
+
+    return results
+
+
+# =============================================================================
+# MOVIE DETAILS
+# =============================================================================
+
+def movie_details(
+
+    movies,
+
+    movie_name
+
+):
+    """
+    Return complete movie details.
+    """
+
+    movie = movies[
+
+        movies["Title"]
+
+        == movie_name
+
+    ]
+
+    if movie.empty:
+
+        return None
+
+    return movie.iloc[0]
+
+
+# =============================================================================
+# DATASET STATISTICS
+# =============================================================================
+
+def dataset_statistics(movies):
+    """
+    Dataset Summary
+    """
+
+    stats = {
+
+        "Total Movies":
+
+            len(movies),
+
+        "Languages":
+
+            movies["Original_Language"]
+
+            .nunique(),
+
+        "Genres":
+
+            len(
+
+                get_genres(movies)
+
+            ) - 1,
+
+        "Average Rating":
+
+            round(
+
+                movies["Vote_Average"]
+
+                .mean(),
+
+                2
+
+            ),
+
+        "Most Popular":
+
+            movies.sort_values(
+
+                "Popularity",
+
+                ascending=False
+
+            )
+
+            .iloc[0]["Title"]
+
     }
 
-def format_rating_stars(rating):
-    """Convert rating to star representation"""
-    full_stars = int(rating // 2)
-    half_star = 1 if rating % 2 >= 0.5 else 0
-    empty_stars = 5 - full_stars - half_star
-    return "⭐" * full_stars + "½" * half_star + "☆" * empty_stars
+    return stats
+
+# =============================================================================
+# PART 4 : STATISTICS, HELPER FUNCTIONS & FINAL CLEANUP
+# =============================================================================
+
+# NOTE: pandas/numpy already imported at the top of the file — no need to
+# reimport them here.
+
+# =============================================================================
+# DATASET SUMMARY
+# =============================================================================
+
+def get_dataset_summary(movies):
+    """
+    Returns summary statistics of the dataset.
+    """
+
+    summary = {
+
+        "Total Movies": len(movies),
+
+        "Total Genres": len(get_genres(movies)) - 1,
+
+        "Total Languages": movies["Original_Language"].nunique(),
+
+        "Average Rating": round(
+            movies["Vote_Average"].mean(), 2
+        ),
+
+        "Average Popularity": round(
+            movies["Popularity"].mean(), 2
+        ),
+
+        "Latest Movie Year": int(
+            movies["Year"].max()
+        ),
+
+        "Oldest Movie Year": int(
+            movies["Year"].min()
+        )
+
+    }
+
+    return summary
+
+
+# =============================================================================
+# RECOMMENDATION CONFIDENCE
+# =============================================================================
+
+def confidence_level(score):
+    """
+    Convert similarity score into confidence label.
+    """
+
+    if score >= 0.80:
+        return "★★★★★ Excellent Match"
+
+    elif score >= 0.60:
+        return "★★★★☆ Very Good Match"
+
+    elif score >= 0.40:
+        return "★★★☆☆ Good Match"
+
+    elif score >= 0.20:
+        return "★★☆☆☆ Fair Match"
+
+    else:
+        return "★☆☆☆☆ Low Match"
+
+
+# =============================================================================
+# RATING BADGE
+# =============================================================================
+
+def rating_badge(rating):
+
+    if rating >= 8:
+        return "🟢 Excellent"
+
+    elif rating >= 7:
+        return "🟡 Good"
+
+    elif rating >= 6:
+        return "🟠 Average"
+
+    return "🔴 Low"
+
+
+# =============================================================================
+# POPULARITY BADGE
+# =============================================================================
+
+def popularity_badge(popularity):
+
+    if popularity >= 1000:
+        return "🔥 Trending"
+
+    elif popularity >= 500:
+        return "📈 Popular"
+
+    elif popularity >= 100:
+        return "👍 Moderate"
+
+    return "🌱 Hidden Gem"
+
+
+# =============================================================================
+# FORMAT RECOMMENDATION CARD
+# =============================================================================
+
+def build_movie_card(movie):
+    """
+    Convert one movie row into
+    a dictionary suitable for Streamlit.
+    """
+
+    return {
+
+        "Title": movie["Title"],
+
+        "Genre": movie["Genre"],
+
+        "Year": movie["Year"],
+
+        "Rating": movie["Vote_Average"],
+
+        "Popularity": movie["Popularity"],
+
+        "Poster": get_poster(movie),
+
+        "RatingBadge": rating_badge(
+            movie["Vote_Average"]
+        ),
+
+        "PopularityBadge": popularity_badge(
+            movie["Popularity"]
+        )
+
+    }
+
+
+# =============================================================================
+# EXPORT RECOMMENDATIONS
+# =============================================================================
+
+def export_recommendations(df, filename="recommendations.csv"):
+    """
+    Save recommendations as CSV.
+    """
+
+    df.to_csv(
+        filename,
+        index=False
+    )
+
+    return filename
+
+
+# =============================================================================
+# REMOVE DUPLICATES
+# =============================================================================
+
+def remove_duplicate_movies(df):
+
+    return df.drop_duplicates(
+        subset="Title"
+    ).reset_index(drop=True)
+
+
+# =============================================================================
+# SAFE POSTER
+# =============================================================================
+
+def get_poster(movie):
+
+    poster = movie.get("Poster_Url", "")
+
+    if pd.isna(poster):
+        return ""
+
+    return poster
+
+
+# =============================================================================
+# GET MOVIE INDEX
+# =============================================================================
+
+def movie_index(movie_name, movies):
+
+    try:
+
+        return movies[
+            movies["Title"] == movie_name
+        ].index[0]
+
+    except Exception:
+
+        return None
+
+
+# =============================================================================
+# GET MOVIE BY INDEX
+# =============================================================================
+
+def movie_by_index(index, movies):
+
+    if index >= len(movies):
+
+        return None
+
+    return movies.iloc[index]
+
+
+# =============================================================================
+# GET RANDOM MOVIES
+# =============================================================================
+
+def random_movies(
+    movies,
+    n=10
+):
+    # Guard against n exceeding the number of available rows, which would
+    # otherwise raise a ValueError from .sample().
+    n = min(n, len(movies))
+
+    return movies.sample(n)
+
+
+# =============================================================================
+# MOST POPULAR MOVIE
+# =============================================================================
+
+def most_popular_movie(movies):
+
+    return movies.sort_values(
+
+        "Popularity",
+
+        ascending=False
+
+    ).iloc[0]
+
+
+# =============================================================================
+# HIGHEST RATED MOVIE
+# =============================================================================
+
+def highest_rated_movie(movies):
+
+    return movies.sort_values(
+
+        ["Vote_Average", "Vote_Count"],
+
+        ascending=False
+
+    ).iloc[0]
+
+
+# =============================================================================
+# MOVIES BY LANGUAGE
+# =============================================================================
+
+def movies_by_language(
+    movies,
+    language
+):
+
+    return movies[
+
+        movies["Original_Language"]
+
+        == language
+
+    ]
+
+
+# =============================================================================
+# MOVIES BY GENRE
+# =============================================================================
+
+def movies_by_genre(
+    movies,
+    genre
+):
+
+    return movies[
+
+        movies["Genre"]
+
+        .str.contains(
+
+            genre,
+
+            case=False,
+
+            na=False,
+
+            regex=False
+
+        )
+
+    ]
+
+
+# =============================================================================
+# MOVIES BY YEAR
+# =============================================================================
+
+def movies_by_year(
+    movies,
+    year
+):
+
+    return movies[
+
+        movies["Year"] == year
+
+    ]
+
+
+# =============================================================================
+# FINAL CLEANUP
+# =============================================================================
+
+def clean_dataframe(df):
+    """
+    Standard dataframe cleanup.
+    """
+
+    df = df.copy()
+
+    df = df.fillna("")
+
+    df = df.drop_duplicates()
+
+    df.reset_index(
+        drop=True,
+        inplace=True
+    )
+
+    return df
+
+
+# =============================================================================
+# END OF FILE
+# =============================================================================
+
+
+
